@@ -5,7 +5,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from langchain_core.messages import AIMessage, HumanMessage
@@ -14,6 +14,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph_checkpoint_aws import AgentCoreMemorySaver
 from model.load import load_model
+from pydantic import BaseModel, Field
 import boto3
 
 app = BedrockAgentCoreApp()
@@ -29,24 +30,22 @@ FIELD_QUESTIONS = {
 }
 
 
+class TurnPlan(BaseModel):
+    """LLM decision for one turn; LangGraph validates and executes it."""
+    intent: Literal["collect", "correct", "confirm", "clarify", "answer_question", "cancel"]
+    field_updates: dict[str, str] = Field(default_factory=dict)
+    next_question: str = ""
+    reply: str = ""
+
+
 class IntakeState(TypedDict, total=False):
     messages: Annotated[list, add_messages]
     ticket: dict[str, str]
     pending_field: str
     completed: bool
     ticket_id: str
-
-
-def _json_object(text: str) -> dict[str, str]:
-    """Extract exactly the object returned by the model; malformed output is safe."""
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return {}
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {}
-    return {key: str(value).strip() for key, value in data.items() if key in REQUIRED_FIELDS and value}
+    intent: str
+    planned_reply: str
 
 
 def _checkpointer():
@@ -57,28 +56,40 @@ def _checkpointer():
     return InMemorySaver()
 
 
-def extract_fields(state: IntakeState) -> dict[str, Any]:
+def reason_about_turn(state: IntakeState) -> dict[str, Any]:
+    """An agentic LangChain node: interpret any turn and propose a state update."""
     ticket = dict(state.get("ticket", {}))
     latest = state["messages"][-1].content
     prompt = (
-        "Você extrai informações de um chamado de service desk.\n\n"
-        f"Campos já conhecidos: {json.dumps(ticket, ensure_ascii=False)}\n"
-        f"Mensagem nova do usuário: {latest}\n\n"
-        "Retorne SOMENTE JSON. Inclua apenas valores explicitamente fornecidos nesta mensagem "
-        "para requester, service, summary, impact e urgency. Não invente valores."
+        "Você é o agente que conduz a abertura de chamados de service desk. Analise a mensagem no contexto do "
+        "estado já coletado. O cliente pode responder em qualquer ordem, corrigir dados, fazer perguntas ou confirmar. "
+        "Escolha a intenção: collect, correct, confirm, clarify, answer_question ou cancel. Extraia somente fatos explícitos "
+        "nos campos requester, service, summary, impact e urgency; não invente. Normalize menções explícitas de 'urgente' "
+        "para urgency='alta' e 'bloqueado/sem conseguir trabalhar' para impact='bloqueado para trabalhar'. Se algo estiver "
+        "ambíguo, use clarify e pergunte de forma natural. Se faltar algo, use collect e pergunte apenas UMA informação "
+        "mais útil agora.\n\n"
+        f"Estado atual: {json.dumps(ticket, ensure_ascii=False)}\nMensagem: {latest}"
     )
-    response = load_model().invoke(prompt)
-    ticket.update(_json_object(str(response.content)))
-    return {"ticket": ticket}
+    plan = load_model().with_structured_output(TurnPlan).invoke(prompt)
+    updates = {key: str(value).strip() for key, value in plan.field_updates.items() if key in REQUIRED_FIELDS and str(value).strip()}
+    ticket.update(updates)
+    return {"ticket": ticket, "intent": plan.intent, "planned_reply": plan.reply or plan.next_question}
 
 
-def decide_next(state: IntakeState) -> dict[str, Any]:
+def respond_or_request_next(state: IntakeState) -> dict[str, Any]:
     ticket = state.get("ticket", {})
+    intent = state.get("intent", "collect")
+    if intent == "cancel":
+        return {"pending_field": "", "completed": False, "messages": [AIMessage(content="Tudo bem, cancelei esta abertura. Quando quiser, podemos iniciar um novo chamado.")]}
+    if intent in {"clarify", "answer_question"} and state.get("planned_reply"):
+        return {"messages": [AIMessage(content=state["planned_reply"])]}
     missing = next((field for field in REQUIRED_FIELDS if not ticket.get(field)), None)
     if missing:
         return {
             "pending_field": missing,
             "completed": False,
+            # The LLM can decide what is missing, but this deterministic guard
+            # keeps the interview easy to follow: exactly one field per turn.
             "messages": [AIMessage(content=FIELD_QUESTIONS[missing])],
         }
     confirmation = (
@@ -93,17 +104,10 @@ def decide_next(state: IntakeState) -> dict[str, Any]:
     return {"pending_field": "confirmation", "completed": True, "messages": [AIMessage(content=confirmation)]}
 
 
-def _confirmed(text: str) -> bool:
-    return text.strip().lower() in {"sim", "s", "confirmo", "confirmar", "pode abrir", "pode criar"}
-
-
-def confirm_or_continue(state: IntakeState) -> dict[str, Any]:
+def create_ticket_if_confirmed(state: IntakeState) -> dict[str, Any]:
     """Create a real ticket only after the prior graph turn requested confirmation."""
-    if not state.get("completed") or state.get("pending_field") != "confirmation":
+    if not state.get("completed") or state.get("pending_field") != "confirmation" or state.get("intent") != "confirm":
         return {}
-    latest = str(state["messages"][-1].content)
-    if not _confirmed(latest):
-        return {"messages": [AIMessage(content="Sem problema. Diga 'sim' quando quiser confirmar a abertura ou informe o que deseja corrigir.")]}
     ticket = state["ticket"]
     ticket_id = f"INC-{uuid.uuid4().hex[:8].upper()}"
     table_name = os.getenv("TICKETS_TABLE")
@@ -121,22 +125,20 @@ def confirm_or_continue(state: IntakeState) -> dict[str, Any]:
     return {"ticket_id": ticket_id, "messages": [AIMessage(content=f"Chamado {ticket_id} criado com sucesso.")]}
 
 
-def route_after_confirmation(state: IntakeState) -> str:
-    return "done" if state.get("ticket_id") or (state.get("completed") and state.get("pending_field") == "confirmation") else "extract"
-
-
-def route_after_extract(_: IntakeState) -> str:
-    return "decide"
+def route_after_reasoning(state: IntakeState) -> str:
+    if state.get("completed") and state.get("pending_field") == "confirmation" and state.get("intent") == "confirm":
+        return "create"
+    return "respond"
 
 
 _graph = StateGraph(IntakeState)
-_graph.add_node("confirm_or_continue", confirm_or_continue)
-_graph.add_node("extract_fields", extract_fields)
-_graph.add_node("decide", decide_next)
-_graph.add_edge(START, "confirm_or_continue")
-_graph.add_conditional_edges("confirm_or_continue", route_after_confirmation, {"done": END, "extract": "extract_fields"})
-_graph.add_conditional_edges("extract_fields", route_after_extract, {"decide": "decide"})
-_graph.add_edge("decide", END)
+_graph.add_node("reason_about_turn", reason_about_turn)
+_graph.add_node("create_ticket", create_ticket_if_confirmed)
+_graph.add_node("respond_or_request_next", respond_or_request_next)
+_graph.add_edge(START, "reason_about_turn")
+_graph.add_conditional_edges("reason_about_turn", route_after_reasoning, {"create": "create_ticket", "respond": "respond_or_request_next"})
+_graph.add_edge("create_ticket", END)
+_graph.add_edge("respond_or_request_next", END)
 workflow = _graph.compile(checkpointer=_checkpointer())
 
 
