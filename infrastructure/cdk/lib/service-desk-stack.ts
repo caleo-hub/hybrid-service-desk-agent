@@ -13,8 +13,10 @@ export class ServiceDeskStack extends cdk.Stack {
   const options={partitionKey:{name:'id',type:db.AttributeType.STRING},billingMode:db.BillingMode.PAY_PER_REQUEST,removalPolicy:RemovalPolicy.DESTROY,timeToLiveAttribute:'expiresAt'};
   const tickets=new db.Table(this,'Tickets',options); const sessions=new db.Table(this,'Sessions',options); const catalog=new db.Table(this,'Catalog',{partitionKey:{name:'id',type:db.AttributeType.STRING},billingMode:db.BillingMode.PAY_PER_REQUEST,removalPolicy:RemovalPolicy.DESTROY});
   const logGroup=new logs.LogGroup(this,'AgentLogs',{retention:logs.RetentionDays.ONE_DAY,removalPolicy:RemovalPolicy.DESTROY});
-  const fn=new lambda.Function(this,'Agent',{runtime:lambda.Runtime.PYTHON_3_12,handler:'index.handler',timeout:Duration.seconds(30),memorySize:1024,logGroup,environment:{TICKETS_TABLE:tickets.tableName,SESSIONS_TABLE:sessions.tableName,CATALOG_TABLE:catalog.tableName,BEDROCK_MODEL_ID:'us.amazon.nova-2-lite-v1:0'},code:lambda.Code.fromAsset(path.resolve(__dirname,'../../../services/lambda'))});
-  tickets.grantReadWriteData(fn);sessions.grantReadWriteData(fn);catalog.grantReadData(fn);fn.addToRolePolicy(new cdk.aws_iam.PolicyStatement({actions:['bedrock:InvokeModel'],resources:['*']}));
+  const agentSource=path.resolve(__dirname,'../../../services/lambda');
+  const runtimeArn='arn:aws:bedrock-agentcore:us-east-1:528049652959:runtime/HybridServiceDesk_ServiceDeskAgent-P1S7vg8eOH';
+  const fn=new lambda.Function(this,'Agent',{runtime:lambda.Runtime.PYTHON_3_12,handler:'index.handler',timeout:Duration.seconds(45),memorySize:512,logGroup,environment:{AGENTCORE_RUNTIME_ARN:runtimeArn},code:lambda.Code.fromAsset(agentSource,{bundling:{image:lambda.Runtime.PYTHON_3_12.bundlingImage,command:['bash','-c','pip install -r requirements.txt -t /asset-output && cp -au . /asset-output']}})});
+  fn.addToRolePolicy(new cdk.aws_iam.PolicyStatement({actions:['bedrock-agentcore:InvokeAgentRuntime'],resources:[runtimeArn,`${runtimeArn}/runtime-endpoint/*`]}));
   const http=new api.HttpApi(this,'DemoApi',{corsPreflight:{allowOrigins:['http://localhost:3100'],allowMethods:[api.CorsHttpMethod.POST]}});http.addRoutes({path:'/message',methods:[api.HttpMethod.POST],integration:new integrations.HttpLambdaIntegration('AgentIntegration',fn)});
   new cdk.CfnOutput(this,'ApiUrl',{value:http.apiEndpoint});new cdk.CfnOutput(this,'CatalogTable',{value:catalog.tableName});
  }

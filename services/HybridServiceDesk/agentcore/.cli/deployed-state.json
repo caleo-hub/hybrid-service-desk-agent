@@ -1,0 +1,23 @@
+{
+  "targets": {
+    "default": {
+      "resources": {
+        "runtimes": {
+          "ServiceDeskAgent": {
+            "runtimeId": "HybridServiceDesk_ServiceDeskAgent-P1S7vg8eOH",
+            "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:528049652959:runtime/HybridServiceDesk_ServiceDeskAgent-P1S7vg8eOH",
+            "roleArn": "arn:aws:iam::528049652959:role/AgentCore-HybridServiceDe-ApplicationAgentServiceDe-wyExPRqB2i0V"
+          }
+        },
+        "memories": {
+          "ServiceDeskAgentMemory": {
+            "memoryId": "HybridServiceDesk_ServiceDeskAgentMemory-QucODz7hTx",
+            "memoryArn": "arn:aws:bedrock-agentcore:us-east-1:528049652959:memory/HybridServiceDesk_ServiceDeskAgentMemory-QucODz7hTx"
+          }
+        },
+        "stackName": "AgentCore-HybridServiceDesk-default",
+        "deployHash": "7a2f022af6a0639c"
+      }
+    }
+  }
+}

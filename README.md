@@ -1,8 +1,8 @@
 # Hybrid Service Desk Agent
 
-Agente de atendimento com workflow determinístico inspirado em LangGraph: interpretação por IA, regras de negócio, confirmação humana e criação de chamado.
+Agente de atendimento executado no Amazon Bedrock AgentCore Runtime com LangGraph, memória de curto prazo, confirmação humana e criação de chamado.
 
-> **Status:** funcional com AWS. O agente usa Amazon Bedrock (Nova 2 Lite) para interpretar a solicitação, DynamoDB para catálogo, sessão e chamados, e API Gateway + Lambda para a API.
+> **Status:** funcional com AWS. O frontend local chama uma API Gateway/Lambda que invoca o AgentCore Runtime. O grafo LangGraph usa Nova 2 Lite para extrair os dados de cada turno, AgentCore Memory para checkpoints por sessão e DynamoDB para o chamado confirmado.
 
 ```bash
 make install
@@ -11,7 +11,7 @@ make seed
 make dev
 ```
 
-A interface local abre em `http://localhost:3100` e encaminha as mensagens para a API AWS. Informe um problema, confira os campos identificados e confirme: um chamado `INC-...` é gravado de verdade no DynamoDB. Antes do deploy, valide as credenciais com `make doctor`. Para remover os recursos temporários após a gravação, execute `make destroy`.
+A interface local abre em `http://localhost:3100` e encaminha as mensagens para a API AWS. Informe um problema, confira os campos identificados e confirme: um chamado `INC-...` é gravado de verdade no DynamoDB pelo runtime. Antes do deploy, valide as credenciais com `make doctor`. Para remover os recursos temporários após a gravação, execute `make destroy`.
 
 ```mermaid
 stateDiagram-v2

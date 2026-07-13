@@ -1,0 +1,1 @@
+# boto3 is included in the Python Lambda runtime; this facade has no external dependencies.
