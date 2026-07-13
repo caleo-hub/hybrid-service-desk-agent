@@ -1,0 +1,1 @@
+{"name":"hybrid-service-desk-agent-infra","private":true,"scripts":{"build":"tsc","synth":"npm run build && cdk synth"},"devDependencies":{"@types/node":"^22.10.2","aws-cdk":"^2.1130.0","aws-cdk-lib":"^2.261.0","constructs":"^10.6.0","ts-node":"^10.9.2","typescript":"^5.7.2"}}
