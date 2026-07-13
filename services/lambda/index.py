@@ -41,7 +41,7 @@ def handler(event, context):
         )
         result = json.loads(invocation["response"].read())
         ticket_id = result.get("ticketId")
-        state = "Concluído" if ticket_id else ("Confirmar" if result.get("complete") else "Coletar")
+        state = "Concluído" if ticket_id else ("Confirmar" if result.get("complete") else ("Coletar" if result.get("ticketActive") else "Conversa"))
         return response(200, {
             "reply": result.get("result", "Não houve resposta do runtime."),
             "state": state,

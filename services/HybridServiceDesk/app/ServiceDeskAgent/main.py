@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal, TypedDict
@@ -32,7 +31,7 @@ FIELD_QUESTIONS = {
 
 class TurnPlan(BaseModel):
     """LLM decision for one turn; LangGraph validates and executes it."""
-    intent: Literal["collect", "correct", "confirm", "clarify", "answer_question", "cancel"]
+    intent: Literal["chat", "start_ticket", "collect", "correct", "confirm", "clarify", "answer_question", "cancel"]
     field_updates: dict[str, str] = Field(default_factory=dict)
     next_question: str = ""
     reply: str = ""
@@ -46,6 +45,7 @@ class IntakeState(TypedDict, total=False):
     ticket_id: str
     intent: str
     planned_reply: str
+    ticket_active: bool
 
 
 def _checkpointer():
@@ -60,27 +60,44 @@ def reason_about_turn(state: IntakeState) -> dict[str, Any]:
     """An agentic LangChain node: interpret any turn and propose a state update."""
     ticket = dict(state.get("ticket", {}))
     latest = state["messages"][-1].content
+    dialogue = [f"{message.type}: {message.content}" for message in state.get("messages", [])[-8:]]
+    active = state.get("ticket_active", bool(ticket))
     prompt = (
-        "Você é o agente que conduz a abertura de chamados de service desk. Analise a mensagem no contexto do "
-        "estado já coletado. O cliente pode responder em qualquer ordem, corrigir dados, fazer perguntas ou confirmar. "
-        "Escolha a intenção: collect, correct, confirm, clarify, answer_question ou cancel. Extraia somente fatos explícitos "
+        "Você é um assistente de service desk conversacional em português do Brasil. Você conversa naturalmente, responde "
+        "saudações, explica suas capacidades e só inicia a abertura de chamado quando houver um problema relatado ou um pedido "
+        "explícito para abrir chamado. Analise a mensagem no contexto do diálogo e do estado.\n\n"
+        "Intenções: chat (saudação, conversa ou dúvida geral sem abrir ticket), start_ticket (começar abertura), collect "
+        "(continuar fornecendo dados), correct (corrigir dados), confirm (aprovar abertura), clarify (pedido ambíguo), "
+        "answer_question (responder uma dúvida durante uma abertura) ou cancel.\n\n"
+        "Quando ticket_active for falso, NÃO pergunte campos de chamado para uma saudação ou conversa geral. Em chat, responda "
+        "de forma cordial e diga que pode tirar dúvidas ou abrir um chamado. Quando ticket_active for verdadeiro, o cliente pode "
+        "responder em qualquer ordem, corrigir dados, fazer perguntas ou confirmar. Extraia somente fatos explícitos "
         "nos campos requester, service, summary, impact e urgency; não invente. Normalize menções explícitas de 'urgente' "
         "para urgency='alta' e 'bloqueado/sem conseguir trabalhar' para impact='bloqueado para trabalhar'. Se algo estiver "
         "ambíguo, use clarify e pergunte de forma natural. Se faltar algo, use collect e pergunte apenas UMA informação "
         "mais útil agora.\n\n"
-        f"Estado atual: {json.dumps(ticket, ensure_ascii=False)}\nMensagem: {latest}"
+        f"ticket_active: {active}\nEstado atual: {json.dumps(ticket, ensure_ascii=False)}\n"
+        f"Diálogo recente: {json.dumps(dialogue, ensure_ascii=False)}\nMensagem atual: {latest}"
     )
     plan = load_model().with_structured_output(TurnPlan).invoke(prompt)
     updates = {key: str(value).strip() for key, value in plan.field_updates.items() if key in REQUIRED_FIELDS and str(value).strip()}
     ticket.update(updates)
-    return {"ticket": ticket, "intent": plan.intent, "planned_reply": plan.reply or plan.next_question}
+    return {
+        "ticket": ticket,
+        "ticket_active": active or plan.intent in {"start_ticket", "collect", "correct"} or bool(updates),
+        "intent": plan.intent,
+        "planned_reply": plan.reply or plan.next_question,
+    }
 
 
 def respond_or_request_next(state: IntakeState) -> dict[str, Any]:
     ticket = state.get("ticket", {})
     intent = state.get("intent", "collect")
+    if intent == "chat" and not state.get("ticket_active"):
+        reply = state.get("planned_reply") or "Olá! Posso responder uma dúvida ou ajudar você a abrir um chamado de suporte."
+        return {"pending_field": "", "completed": False, "messages": [AIMessage(content=reply)]}
     if intent == "cancel":
-        return {"pending_field": "", "completed": False, "messages": [AIMessage(content="Tudo bem, cancelei esta abertura. Quando quiser, podemos iniciar um novo chamado.")]}
+        return {"ticket": {}, "ticket_active": False, "pending_field": "", "completed": False, "messages": [AIMessage(content="Tudo bem, cancelei esta abertura. Quando quiser, podemos iniciar um novo chamado.")]}
     if intent in {"clarify", "answer_question"} and state.get("planned_reply"):
         return {"messages": [AIMessage(content=state["planned_reply"])]}
     missing = next((field for field in REQUIRED_FIELDS if not ticket.get(field)), None)
@@ -153,7 +170,7 @@ async def invoke(payload, context):
         config={"configurable": {"thread_id": session_id, "actor_id": "service-desk-demo"}},
     )
     answer = result["messages"][-1].content
-    return {"result": answer, "ticket": result.get("ticket", {}), "ticketId": result.get("ticket_id"), "complete": result.get("completed", False)}
+    return {"result": answer, "ticket": result.get("ticket", {}), "ticketId": result.get("ticket_id"), "ticketActive": result.get("ticket_active", False), "complete": result.get("completed", False)}
 
 
 if __name__ == "__main__":
