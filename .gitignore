@@ -7,3 +7,4 @@ cdk.out/
 infrastructure/cdk/dist/
 infrastructure/cdk/bin/*.js
 infrastructure/cdk/lib/*.js
+docs/demo-script.md
