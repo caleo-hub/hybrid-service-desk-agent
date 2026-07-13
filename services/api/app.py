@@ -1,24 +1,31 @@
+"""Servidor local do frontend; o fluxo do agente roda na API AWS exportada."""
 from __future__ import annotations
-import json, os, uuid
+import json, os, re
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
-ROOT=Path(__file__).resolve().parents[2]; WEB=ROOT/'apps'/'web'
-STEPS=[('Entender','Intenção identificada'),('Coletar','Dados do incidente coletados'),('Validar','Campos obrigatórios validados'),('Classificar','Impacto e prioridade classificados'),('Confirmar','Aguardando confirmação humana'),('Criar','Chamado criado')]
-
-def run(message:str, confirm:bool=False)->dict:
-    lower=message.lower(); missing=not any(x in lower for x in ('notebook','vpn','email','acesso','impressora'))
-    if missing: return {'reply':'Para criar o chamado, preciso saber qual serviço ou equipamento está com problema.', 'state':'Coletar','steps':STEPS[:2],'fields':{'description':message},'ticket':None}
-    fields={'service':'Notebook corporativo' if 'notebook' in lower else 'Serviço de TI','impact':'Alto' if any(x in lower for x in ('duas horas','urgente','apresentação')) else 'Médio','summary':message}
-    if not confirm: return {'reply':'Entendi o problema. Revise os dados e confirme a criação do chamado.', 'state':'Confirmar','steps':STEPS[:5],'fields':fields,'ticket':None}
-    ticket='INC-'+uuid.uuid4().hex[:6].upper()
-    return {'reply':f'Chamado {ticket} criado com prioridade alta. A equipe de campo foi notificada.', 'state':'Concluído','steps':STEPS,'fields':fields,'ticket':ticket}
-
+ROOT=Path(__file__).resolve().parents[2]; WEB=ROOT/'apps'/'web'; CONFIG=WEB/'config.local.js'
+def api_url():
+ match=re.search(r"apiUrl\s*:\s*['\"](https://[^'\"\s]+)['\"]",CONFIG.read_text()) if CONFIG.exists() else None
+ return match.group(1) if match else None
 class Handler(SimpleHTTPRequestHandler):
  def __init__(self,*a,**k): super().__init__(*a,directory=str(WEB),**k)
+ def do_GET(self):
+  if urlparse(self.path).path=='/api/health': return self.send_json({'status':'ok','apiConfigured':bool(api_url())})
+  super().do_GET()
  def do_POST(self):
-  if urlparse(self.path).path!='/api/message': self.send_error(404);return
-  data=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))) or b'{}'); out=run(str(data.get('message','')),bool(data.get('confirm'))); raw=json.dumps(out,ensure_ascii=False).encode();self.send_response(200);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
+  if urlparse(self.path).path!='/api/message':self.send_error(404);return
+  target=api_url()
+  if not target:return self.send_json({'error':'API AWS não configurada. Execute make deploy e make seed.'},503)
+  try:
+   body=self.rfile.read(int(self.headers.get('Content-Length','0'))); request=Request(target.rstrip('/')+'/message',data=body,headers={'Content-Type':'application/json'},method='POST')
+   with urlopen(request,timeout=35) as response:self.send_json(json.loads(response.read()),response.status)
+  except HTTPError as error:self.send_json(json.loads(error.read() or b'{"error":"Erro na API"}'),error.code)
+  except (URLError,TimeoutError,ValueError) as error:self.send_json({'error':f'Falha ao chamar a API AWS: {error}'},502)
+ def send_json(self,payload,status=200):
+  raw=json.dumps(payload,ensure_ascii=False,default=str).encode();self.send_response(status);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
 if __name__=='__main__':
  port=int(os.getenv('PORT','3100'));print(f'Hybrid Service Desk Agent em http://localhost:{port}');ThreadingHTTPServer(('127.0.0.1',port),Handler).serve_forever()

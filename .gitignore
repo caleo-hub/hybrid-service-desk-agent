@@ -1,5 +1,8 @@
 .env
 .env.local
+.env.aws
+.venv/
+apps/web/config.local.js
 __pycache__/
 *.py[cod]
 node_modules/

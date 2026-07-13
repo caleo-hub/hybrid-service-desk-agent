@@ -2,14 +2,16 @@
 
 Agente de atendimento com workflow determinístico inspirado em LangGraph: interpretação por IA, regras de negócio, confirmação humana e criação de chamado.
 
-> **Status:** demo local funcional e infraestrutura AWS sintetizada. A execução real do grafo com Bedrock e persistência DynamoDB é a próxima etapa antes de um deploy para gravação.
+> **Status:** funcional com AWS. O agente usa Amazon Bedrock (Nova 2 Lite) para interpretar a solicitação, DynamoDB para catálogo, sessão e chamados, e API Gateway + Lambda para a API.
 
 ```bash
 make install
+make deploy
+make seed
 make dev
 ```
 
-A demo local abre em `http://localhost:3100` e não usa credenciais AWS. Para o ciclo temporário com Lambda, DynamoDB, API Gateway e Bedrock, execute `make doctor`, `make deploy`, `make seed` e, após gravar, `make destroy`.
+A interface local abre em `http://localhost:3100` e encaminha as mensagens para a API AWS. Informe um problema, confira os campos identificados e confirme: um chamado `INC-...` é gravado de verdade no DynamoDB. Antes do deploy, valide as credenciais com `make doctor`. Para remover os recursos temporários após a gravação, execute `make destroy`.
 
 ```mermaid
 stateDiagram-v2
@@ -23,4 +25,4 @@ stateDiagram-v2
   Criar --> Concluído
 ```
 
-O roteiro de gravação está em [docs/demo-script.md](docs/demo-script.md).
+Os arquivos locais gerados pelo deploy (`.env.aws` e `apps/web/config.local.js`) não são versionados.
