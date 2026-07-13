@@ -5,3 +5,5 @@ __pycache__/
 node_modules/
 cdk.out/
 infrastructure/cdk/dist/
+infrastructure/cdk/bin/*.js
+infrastructure/cdk/lib/*.js
