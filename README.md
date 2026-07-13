@@ -2,6 +2,8 @@
 
 Agente de atendimento com workflow determinístico inspirado em LangGraph: interpretação por IA, regras de negócio, confirmação humana e criação de chamado.
 
+> **Status:** demo local funcional e infraestrutura AWS sintetizada. A execução real do grafo com Bedrock e persistência DynamoDB é a próxima etapa antes de um deploy para gravação.
+
 ```bash
 make install
 make dev
