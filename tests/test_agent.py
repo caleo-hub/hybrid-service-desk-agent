@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import json
 from pathlib import Path
 import unittest
+
 
 path = Path(__file__).resolve().parents[1] / "services/lambda/index.py"
 spec = importlib.util.spec_from_file_location("agent", path)
@@ -11,33 +13,45 @@ spec.loader.exec_module(agent)
 
 class AgentTests(unittest.TestCase):
     def setUp(self):
-        self.saved = []
-        agent.catalog.scan = lambda: {"Items": [{"name": "Notebook corporativo"}]}
-        agent.sessions.get_item = lambda Key: {"Item": {}}
-        agent.sessions.put_item = lambda Item: self.saved.append(Item)
+        agent.RUNTIME_ARN = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/demo"
 
-    def test_graph_asks_only_next_missing_field(self):
-        agent.analyse_turn = lambda message, current, services: {"service": "Notebook corporativo", "summary": "", "impact": "", "nextQuestion": "O que está acontecendo com o notebook?", "confirmationReply": ""}
-        body = json.loads(agent.handler({"body": json.dumps({"message": "Meu notebook parou"})}, None)["body"])
-        self.assertEqual(body["state"], "Coletar")
-        self.assertEqual(body["missing"], ["summary", "impact"])
-        self.assertIn("acontecendo", body["reply"])
-        self.assertEqual(self.saved[0]["service"], "Notebook corporativo")
+    def test_rejects_missing_or_short_session_id(self):
+        result = agent.handler({"body": json.dumps({"message": "Meu notebook parou"})}, None)
+        self.assertEqual(result["statusCode"], 400)
+        self.assertIn("sessionId", json.loads(result["body"])["error"])
 
-    def test_graph_merges_turns_and_then_requests_confirmation(self):
-        agent.sessions.get_item = lambda Key: {"Item": {"id": Key["id"], "service": "Notebook corporativo", "history": []}}
-        agent.analyse_turn = lambda message, current, services: {"service": "", "summary": "desliga sozinho", "impact": "Alto", "nextQuestion": "", "confirmationReply": "Confirma a abertura para o notebook?"}
-        body = json.loads(agent.handler({"body": json.dumps({"message": "Ele desliga sozinho e bloqueia a apresentação"})}, None)["body"])
-        self.assertEqual(body["state"], "Confirmar")
-        self.assertEqual(body["fields"]["impact"], "Alto")
-        self.assertIn("Confirma", body["reply"])
+    def test_invokes_agentcore_and_returns_ticket_state(self):
+        captured = {}
 
-    def test_confirmation_creates_ticket_after_graph_is_complete(self):
-        stored = {"id": "session-1", "state": "Confirmar", "service": "Notebook corporativo", "summary": "desliga sozinho", "impact": "Alto"}
-        written = []
-        agent.sessions.get_item = lambda Key: {"Item": stored}
-        agent.sessions.delete_item = lambda Key: None
-        agent.tickets.put_item = lambda Item: written.append(Item)
-        body = json.loads(agent.handler({"body": json.dumps({"message": "confirmar", "sessionId": "session-1", "confirm": True})}, None)["body"])
-        self.assertEqual(body["state"], "Concluído")
-        self.assertEqual(len(written), 1)
+        def invoke_agent_runtime(**request):
+            captured.update(request)
+            return {"response": io.BytesIO(json.dumps({
+                "result": "Registrei o incidente.",
+                "ticketId": "INC-123456",
+                "ticket": {"service": "Notebook corporativo", "impact": "Alto"},
+            }).encode())}
+
+        agent.runtime.invoke_agent_runtime = invoke_agent_runtime
+        session_id = "123e4567-e89b-12d3-a456-426614174000"
+        result = agent.handler({"body": json.dumps({"sessionId": session_id, "message": "Pode confirmar"})}, None)
+        body = json.loads(result["body"])
+        self.assertEqual(result["statusCode"], 200)
+        self.assertEqual(captured["agentRuntimeArn"], agent.RUNTIME_ARN)
+        self.assertEqual(captured["runtimeSessionId"], session_id)
+        self.assertEqual(body["ticket"], "INC-123456")
+
+    def test_confirm_flag_sends_confirmation_to_runtime(self):
+        captured = {}
+
+        def invoke_agent_runtime(**request):
+            captured.update(json.loads(request["payload"].decode()))
+            return {"response": io.BytesIO(json.dumps({"result": "Confirmado", "ticketActive": True}).encode())}
+
+        agent.runtime.invoke_agent_runtime = invoke_agent_runtime
+        result = agent.handler({"body": json.dumps({
+            "sessionId": "123e4567-e89b-12d3-a456-426614174000",
+            "message": "texto ignorado",
+            "confirm": True,
+        })}, None)
+        self.assertEqual(result["statusCode"], 200)
+        self.assertEqual(captured["prompt"], "sim")

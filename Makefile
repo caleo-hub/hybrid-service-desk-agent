@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 PYTHON ?= python3
-UV ?= /home/caleo/.local/bin/uv
+UV ?= $(shell command -v uv 2>/dev/null || echo /home/caleo/.local/bin/uv)
 AWS ?= /home/caleo/.local/bin/aws
 .PHONY: install doctor dev verify deploy seed destroy synth
 install:

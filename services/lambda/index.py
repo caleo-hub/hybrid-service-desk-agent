@@ -8,7 +8,7 @@ import time
 import boto3
 
 runtime = boto3.client("bedrock-agentcore", region_name=os.getenv("AWS_REGION", "us-east-1"))
-RUNTIME_ARN = os.environ["AGENTCORE_RUNTIME_ARN"]
+RUNTIME_ARN = os.getenv("AGENTCORE_RUNTIME_ARN", "")
 
 
 def response(status: int, body: dict) -> dict:
@@ -32,6 +32,8 @@ def handler(event, context):
             message = "sim"
         if not message:
             return response(400, {"error": "Envie uma mensagem."})
+        if not RUNTIME_ARN:
+            raise RuntimeError("AGENTCORE_RUNTIME_ARN nao configurado.")
         started = time.perf_counter()
         invocation = runtime.invoke_agent_runtime(
             agentRuntimeArn=RUNTIME_ARN,
